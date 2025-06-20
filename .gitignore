@@ -1,0 +1,31 @@
+# build
+/build
+
+# macos
+*.DS_Store
+
+# environment
+.env
+
+# logs
+logs
+*.log
+
+# coverage      
+coverage
+
+# IDEs
+.idea
+.vscode
+
+# Xcode
+## User-specific files
+*.xcodeproj/project.xcworkspace
+*.xcodeproj/xcuserdata
+*.xcworkspace/xcshareddata
+*.xcworkspace/xcuserdata
+/DerivedData/
+
+# temporary files
+*.tmp
+*.temp
