@@ -17,7 +17,7 @@ A simple clipboard manager for macOS.
 
 ## Installation
 
-1.  Download the latest `Clippy.dmg` file from the [releases page](https://github.com/vicopem01/clippy/releases).
+1.  Download the latest `Clippy.dmg` file from [here](https://github.com/Vicopem01/clippy/releases/download/latest/Clippy.dmg).
 2.  Open the DMG file.
 3.  Drag `Clippy.app` to your `Applications` folder.
 
