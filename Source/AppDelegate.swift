@@ -162,11 +162,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate { // Added
                 popoverWindow.makeKeyAndOrderFront(nil)
                 print("Popover window made key and ordered front.")
             }
+            // Add observer for drag events
+            NotificationCenter.default.addObserver(self, selector: #selector(handleDrag), name: NSNotification.Name("ClippyItemDidBeginDrag"), object: nil)
         } else {
             print("Popover window not found to make key in popoverDidShow.")
         }
-        // Ensure the application is active once the popover is shown and potentially made key.
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func handleDrag(_ notification: Notification) {
+        print("Drag detected, closing popover.")
+        closePopover(sender: nil)
     }
 
     func popoverWillClose(_ notification: Notification) {
@@ -175,7 +181,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate { // Added
 
     func popoverDidClose(_ notification: Notification) {
         print("Popover did close.")
-        // Perform any cleanup or state changes if necessary
+        // Remove drag observer
+        NotificationCenter.default.removeObserver(self, name: NSNotification.Name("ClippyItemDidBeginDrag"), object: nil)
+        // When the popover closes, hide the app to return focus to the last active application.
+        // This allows the global shortcut to work again immediately.
+        NSApp.hide(nil)
     }
 
     func popoverShouldClose(_ popover: NSPopover) -> Bool {

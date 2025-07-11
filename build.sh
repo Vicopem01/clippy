@@ -1,7 +1,11 @@
 #!/bin/bash
 
 # Exit on error
-# set -e
+set -e
+
+# Log file
+LOG_FILE="build.log"
+exec > >(tee "$LOG_FILE") 2>&1
 
 # --- Configuration ---
 APP_NAME="Clippy"
@@ -51,12 +55,21 @@ hdiutil create -volname "$APP_NAME" \
     "$TEMP_DMG_PATH"
 
 # 6. Mount the DMG and apply styling
-echo "--- Mounting DMG and applying styles ---"
-MOUNT_POINT=$(hdiutil attach -readwrite -noverify -noautoopen "$TEMP_DMG_PATH" | awk '/\/Volumes\//{print $NF}')
+# Use grep to reliably extract the mount point
+MOUNT_POINT=$(hdiutil attach -readwrite -noverify -noautoopen "$TEMP_DMG_PATH" | grep -o '/Volumes/Clippy[^ ]*')
+if [ -z "$MOUNT_POINT" ]; then
+    echo "[ERROR] Could not determine DMG mount point. Aborting." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
-echo "--- Applying styles to DMG ---"
-sleep 2 # Give the volume time to mount
+echo "[INFO] DMG mounted at $MOUNT_POINT" | tee -a "$LOG_FILE"
 
+# Hide all top-level items that are not symlinks, then unhide the app.
+# This avoids "operation not permitted" on the Applications symlink.
+find "$MOUNT_POINT" -mindepth 1 -maxdepth 1 ! -type l -exec chflags hidden {} +
+chflags nohidden "$MOUNT_POINT/$APP_NAME.app"
+
+# AppleScript: only position Clippy.app and Applications, smaller window size
 osascript <<EOT
 tell application "Finder"
   tell disk "$APP_NAME"
@@ -64,23 +77,25 @@ tell application "Finder"
     set current view of container window to icon view
     set toolbar visible of container window to false
     set statusbar visible of container window to false
-    set the bounds of container window to {400, 100, 900, 450}
+    set the bounds of container window to {400, 100, 1000, 500}
     set theViewOptions to the icon view options of container window
     set arrangement of theViewOptions to not arranged
-    set icon size of theViewOptions to 100
-    set background color of theViewOptions to {20000, 20000, 20000}
-    set position of item "$APP_NAME.app" of container window to {125, 175}
-    set position of item "Applications" of container window to {375, 175}
+    set icon size of theViewOptions to 110
+    set background color of theViewOptions to {12000, 12000, 12000}
+    set position of item "$APP_NAME.app" of container window to {150, 180}
+    set position of item "Applications" of container window to {450, 180}
     update without registering applications
     close
   end tell
-  sync
 end tell
 EOT
 
 # 7. Unmount the DMG
 echo "--- Unmounting DMG ---"
 hdiutil detach "$MOUNT_POINT" -force
+
+# Add a small delay to allow the system to release the DMG file
+sleep 2
 
 # 8. Convert to compressed DMG
 echo "--- Converting to compressed DMG ---"

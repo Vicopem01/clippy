@@ -21,6 +21,10 @@ A simple clipboard manager for macOS.
 2.  Open the DMG file.
 3.  Drag `Clippy.app` to your `Applications` folder.
 
+## Permissions
+
+Upon first launch, Clippy will request accessibility permissions. This is necessary for the global hotkey feature (Control + V) to work correctly. Please grant these permissions when prompted.
+
 ## Usage
 
 1.  Launch Clippy.

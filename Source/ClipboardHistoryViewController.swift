@@ -6,11 +6,13 @@
 //
 
 import Cocoa
+import UniformTypeIdentifiers
 
 struct ClipboardItem: Equatable {
     enum DataType: Equatable {
         case text(String)
         case image(NSImage) // Store NSImage directly
+        case file(URL)
 
         // Equatable conformance for DataType
         static func == (lhs: DataType, rhs: DataType) -> Bool {
@@ -22,6 +24,8 @@ struct ClipboardItem: Equatable {
                 // A more robust comparison might involve checking TIFF representations' equality
                 // or even a visual hash if performance becomes an issue with many large images.
                 return lImage.tiffRepresentation == rImage.tiffRepresentation
+            case (.file(let lURL), .file(let rURL)):
+                return lURL == rURL
             default:
                 return false
             }
@@ -42,6 +46,12 @@ struct ClipboardItem: Equatable {
         self.type = .image(image)
         self.timestamp = Date()
     }
+    
+    // Convenience initializer for file URL
+    init(fileURL: URL) {
+        self.type = .file(fileURL)
+        self.timestamp = Date()
+    }
 
     // Equatable conformance for ClipboardItem
     static func == (lhs: ClipboardItem, rhs: ClipboardItem) -> Bool {
@@ -55,6 +65,23 @@ struct ClipboardItem: Equatable {
             return text
         case .image:
             return "[Image]" // Placeholder text for image items
+        case .file(let url):
+            let fileName = url.lastPathComponent
+            if #available(macOS 11.0, *) {
+                if let typeIdentifier = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier,
+                   let utType = UTType(typeIdentifier) {
+                    if utType.conforms(to: .image) {
+                        return "🖼️ [Image] \(fileName)"
+                    } else if utType.conforms(to: .movie) {
+                        return "🎬 [Video] \(fileName)"
+                    } else if utType.conforms(to: .audio) {
+                        return "🎵 [Audio] \(fileName)"
+                    } else if utType.conforms(to: .plainText) {
+                        return "📄 [Text] \(fileName)"
+                    }
+                }
+            }
+            return "📁 [File] \(fileName)"
         }
     }
 
@@ -394,9 +421,13 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
         self.lastPasteboardChangeCount = currentSystemChangeCount
         
         var newItem: ClipboardItem?
+        let pasteboard = NSPasteboard.general
 
-        // Check for images first
-        if let image = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage {
+        // Prioritize file URLs. This is a more robust way to detect file copies.
+        if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !fileURLs.isEmpty {
+            // For simplicity, we'll take the first file URL if multiple are copied.
+            newItem = ClipboardItem(fileURL: fileURLs[0])
+        } else if let image = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage {
             // Create a new NSImage instance from the pasteboard image's TIFF representation
             // This helps in detaching it from the pasteboard and ensuring it's a distinct copy.
             if let tiffData = image.tiffRepresentation, let copiedImage = NSImage(data: tiffData) {
@@ -458,7 +489,9 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
         case .text(let text):
             pboard.clearContents()
             if pboard.setString(text, forType: .string) {
-                print("Dragging text: \\(text)")
+                print("Dragging text: \(text)")
+                // Notify AppDelegate to close the popover
+                NotificationCenter.default.post(name: NSNotification.Name("ClippyItemDidBeginDrag"), object: nil)
                 return true
             }
             return false
@@ -466,6 +499,11 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
             // Dragging images directly into input fields is not the primary request here.
             // For now, we only support dragging text.
             print("Dragging images is not currently supported via this method.")
+            return false
+        case .file:
+            // Dragging files directly into input fields is not the primary request here.
+            // For now, we only support dragging text.
+            print("Dragging files is not currently supported via this method.")
             return false
         }
     }
@@ -514,10 +552,12 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
             // For images, we need to write the image object to the pasteboard.
             // NSImage conforms to NSPasteboardWriting, so it can be written directly.
             success = NSPasteboard.general.writeObjects([image])
+        case .file(let url):
+            success = NSPasteboard.general.setString(url.absoluteString, forType: .fileURL)
         }
 
         if success {
-            print("Copied to clipboard: \\(selectedItem.displayString)")
+            print("Copied to clipboard: \(selectedItem.displayString)")
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
                 appDelegate.closePopover(sender: nil)
             }

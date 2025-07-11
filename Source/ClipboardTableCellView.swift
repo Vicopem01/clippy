@@ -113,6 +113,14 @@ class ClipboardTableCellView: NSTableCellView {
             
             NSLayoutConstraint.deactivate(textOnlyConstraints)
             NSLayoutConstraint.activate(imageConstraints)
+        case .file:
+            itemTextField.stringValue = item.displayString
+            itemImageView.image = nil
+            itemImageView.isHidden = true
+            dragHandleLabel.isHidden = false
+            
+            NSLayoutConstraint.deactivate(imageConstraints)
+            NSLayoutConstraint.activate(textOnlyConstraints)
         }
     }
 }
