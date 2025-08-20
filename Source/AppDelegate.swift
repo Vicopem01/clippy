@@ -6,6 +6,8 @@
 //
 
 import Cocoa
+import ServiceManagement
+import CoreServices // Import for LSSharedFileList
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate { // Added NSPopoverDelegate
@@ -53,6 +55,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate { // Added
 
         // Attempt to register the global shortcut
         setupGlobalShortcut()
+
+        // Set up auto-launch on startup
+        setupAutoLaunch()
 
         // Add an observer to re-check permissions when the app becomes active
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -132,6 +137,125 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate { // Added
     // Add this new method to explicitly close the popover
     func closePopover(sender: Any?) {
         popover?.performClose(sender)
+    }
+
+    // MARK: - Auto Launch Setup
+    
+    func setupAutoLaunch() {
+        // Enable auto-launch immediately without asking the user
+        if !isLaunchAtLoginEnabled() {
+            setLaunchAtLogin(true)
+            print("Auto-launch enabled for Clippy")
+        } else {
+            print("Auto-launch was already enabled.")
+        }
+    }
+    
+    func setLaunchAtLogin(_ enabled: Bool) {
+        if #available(macOS 13.0, *) {
+            // Use SMAppService for macOS 13+
+            do {
+                let service = SMAppService.mainApp
+                if enabled {
+                    if service.status == .notRegistered {
+                        try service.register()
+                        print("Successfully registered app for auto-launch")
+                    } else {
+                        print("App already registered for auto-launch")
+                    }
+                } else {
+                    try service.unregister()
+                    print("Successfully unregistered app from auto-launch")
+                }
+            } catch {
+                print("Failed to \(enabled ? "enable" : "disable") auto-launch: \(error)")
+            }
+        } else {
+            // Fallback for older macOS versions using LSSharedFileList
+            if enabled {
+                addToLoginItems()
+            } else {
+                removeFromLoginItems()
+            }
+        }
+    }
+    
+    private func addToLoginItems() {
+        let appURL = Bundle.main.bundleURL
+        
+        // Use LSSharedFileList for older macOS versions
+        let fileList = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)
+        guard let loginItems = fileList?.takeRetainedValue() else {
+            print("Failed to create login items list.")
+            return
+        }
+        
+        LSSharedFileListInsertItemURL(
+            loginItems,
+            kLSSharedFileListItemLast.takeUnretainedValue(),
+            nil,
+            nil,
+            appURL as CFURL,
+            nil,
+            nil
+        )
+        print("Added to login items using LSSharedFileList")
+    }
+    
+    private func removeFromLoginItems() {
+        let appURL = Bundle.main.bundleURL
+        
+        let fileList = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)
+        guard let loginItems = fileList?.takeRetainedValue() else {
+            print("Failed to create login items list for removal.")
+            return
+        }
+        
+        guard let snapshot = LSSharedFileListCopySnapshot(loginItems, nil) else {
+            print("Failed to get login items snapshot.")
+            return
+        }
+        
+        let loginItemsArray = snapshot.takeRetainedValue() as! [LSSharedFileListItem]
+        
+        for item in loginItemsArray {
+            var resolutionRef: Unmanaged<CFURL>?
+            
+            if LSSharedFileListItemResolve(item, 0, &resolutionRef, nil) == noErr,
+               let resolvedURL = resolutionRef?.takeRetainedValue(),
+               (resolvedURL as URL) == appURL {
+                LSSharedFileListItemRemove(loginItems, item)
+                print("Removed from login items using LSSharedFileList")
+                break
+            }
+        }
+    }
+    
+    func isLaunchAtLoginEnabled() -> Bool {
+        if #available(macOS 13.0, *) {
+            let service = SMAppService.mainApp
+            return service.status == .enabled
+        } else {
+            // Check using LSSharedFileList for older versions
+            let appURL = Bundle.main.bundleURL
+            
+            let fileList = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)
+            guard let loginItems = fileList?.takeRetainedValue() else { return false }
+            
+            guard let snapshot = LSSharedFileListCopySnapshot(loginItems, nil) else { return false }
+            let loginItemsArray = snapshot.takeRetainedValue() as! [LSSharedFileListItem]
+            
+            for item in loginItemsArray {
+                var resolutionRef: Unmanaged<CFURL>?
+                
+                if LSSharedFileListItemResolve(item, 0, &resolutionRef, nil) == noErr,
+                   let resolvedURL = resolutionRef?.takeRetainedValue(),
+                   (resolvedURL as URL) == appURL {
+                    return true
+                }
+            }
+            return false
+        }
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
