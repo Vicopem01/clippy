@@ -59,13 +59,16 @@ class ClipboardTableCellView: NSTableCellView {
         imageConstraints = [
             itemImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
             itemImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            itemImageView.widthAnchor.constraint(equalToConstant: 30),
-            itemImageView.heightAnchor.constraint(equalToConstant: 30),
+            itemImageView.widthAnchor.constraint(equalToConstant: 24),
+            itemImageView.heightAnchor.constraint(equalToConstant: 24),
 
             itemTextField.leadingAnchor.constraint(equalTo: itemImageView.trailingAnchor, constant: 8),
-            itemTextField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            itemTextField.trailingAnchor.constraint(equalTo: dragHandleLabel.leadingAnchor, constant: -8),
             itemTextField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            itemTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 16)
+            itemTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
+
+            dragHandleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            dragHandleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ]
 
         // Define constraints for text-only layout
@@ -105,11 +108,11 @@ class ClipboardTableCellView: NSTableCellView {
             NSLayoutConstraint.deactivate(imageConstraints)
             NSLayoutConstraint.activate(textOnlyConstraints)
 
-        case .image(let image):
+        case .image(let image, _):
             itemTextField.stringValue = "[Image]" // Placeholder text for images
             itemImageView.image = image
             itemImageView.isHidden = false
-            dragHandleLabel.isHidden = true
+            dragHandleLabel.isHidden = false
             
             NSLayoutConstraint.deactivate(textOnlyConstraints)
             NSLayoutConstraint.activate(imageConstraints)
