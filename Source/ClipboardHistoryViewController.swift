@@ -6,24 +6,21 @@
 //
 
 import Cocoa
+import CryptoKit
 import UniformTypeIdentifiers
 
 struct ClipboardItem: Equatable {
     enum DataType: Equatable {
         case text(String)
-        case image(NSImage) // Store NSImage directly
+        case image(NSImage, digest: Data)
         case file(URL)
 
-        // Equatable conformance for DataType
         static func == (lhs: DataType, rhs: DataType) -> Bool {
             switch (lhs, rhs) {
             case (.text(let lText), .text(let rText)):
                 return lText == rText
-            case (.image(let lImage), .image(let rImage)):
-                // For simplicity, we can compare image data.
-                // A more robust comparison might involve checking TIFF representations' equality
-                // or even a visual hash if performance becomes an issue with many large images.
-                return lImage.tiffRepresentation == rImage.tiffRepresentation
+            case (.image(_, let lDigest), .image(_, let rDigest)):
+                return lDigest == rDigest
             case (.file(let lURL), .file(let rURL)):
                 return lURL == rURL
             default:
@@ -33,61 +30,54 @@ struct ClipboardItem: Equatable {
     }
 
     let type: DataType
-    let timestamp: Date // Keep track of when it was copied
+    let timestamp: Date
+    let displayString: String
 
-    // Convenience initializer for text
     init(text: String) {
         self.type = .text(text)
         self.timestamp = Date()
+        self.displayString = text
     }
 
-    // Convenience initializer for image
-    init(image: NSImage) {
-        self.type = .image(image)
+    init(image: NSImage, imageData: Data? = nil) {
+        let rawData = imageData ?? image.tiffRepresentation ?? Data()
+        let digest = Data(SHA256.hash(data: rawData))
+        self.type = .image(image, digest: digest)
         self.timestamp = Date()
+        self.displayString = "[Image]"
     }
-    
-    // Convenience initializer for file URL
+
     init(fileURL: URL) {
         self.type = .file(fileURL)
         self.timestamp = Date()
+        self.displayString = Self.makeFileDisplayString(for: fileURL)
     }
 
-    // Equatable conformance for ClipboardItem
     static func == (lhs: ClipboardItem, rhs: ClipboardItem) -> Bool {
-        return lhs.type == rhs.type // Timestamps can differ for "same" content if re-copied
+        return lhs.type == rhs.type
     }
 
-    // Helper to get a display string, primarily for text or a placeholder for images
-    var displayString: String {
-        switch type {
-        case .text(let text):
-            return text
-        case .image:
-            return "[Image]" // Placeholder text for image items
-        case .file(let url):
-            let fileName = url.lastPathComponent
-            if #available(macOS 11.0, *) {
-                if let typeIdentifier = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier,
-                   let utType = UTType(typeIdentifier) {
-                    if utType.conforms(to: .image) {
-                        return "🖼️ [Image] \(fileName)"
-                    } else if utType.conforms(to: .movie) {
-                        return "🎬 [Video] \(fileName)"
-                    } else if utType.conforms(to: .audio) {
-                        return "🎵 [Audio] \(fileName)"
-                    } else if utType.conforms(to: .plainText) {
-                        return "📄 [Text] \(fileName)"
-                    }
+    private static func makeFileDisplayString(for url: URL) -> String {
+        let fileName = url.lastPathComponent
+        if #available(macOS 11.0, *) {
+            if let typeIdentifier = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier,
+               let utType = UTType(typeIdentifier) {
+                if utType.conforms(to: .image) {
+                    return "🖼️ [Image] \(fileName)"
+                } else if utType.conforms(to: .movie) {
+                    return "🎬 [Video] \(fileName)"
+                } else if utType.conforms(to: .audio) {
+                    return "🎵 [Audio] \(fileName)"
+                } else if utType.conforms(to: .plainText) {
+                    return "📄 [Text] \(fileName)"
                 }
             }
-            return "📁 [File] \(fileName)"
         }
+        return "📁 [File] \(fileName)"
     }
 
-    // Helper to get the image if the item is an image
     var image: NSImage? {
-        if case .image(let img) = type {
+        if case .image(let img, _) = type {
             return img
         }
         return nil
@@ -129,7 +119,6 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
         setupFooterLabel() // <-- Call new setup method
 
         // Register for drag and drop
-        tableView.registerForDraggedTypes([NSPasteboard.PasteboardType.string])
         tableView.setDraggingSourceOperationMask(.copy, forLocal: false) // Allow dragging to other apps
 
         checkClipboard() // Changed from checkPasteboard() for consistency & initial check
@@ -228,12 +217,7 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
 
     @objc private func clearHistoryClicked() {
         clipboardHistory.removeAll()
-        // TODO: Persist this change if history is saved
-        DispatchQueue.main.async {
-            self.updateViewVisibility() // Changed from updateUIForHistoryState()
-            self.tableView.reloadData()
-        }
-        print("Clipboard history cleared.")
+        updateViewVisibility()
     }
 
     private func setupEmptyMessageLabel() {
@@ -368,9 +352,11 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
             // Constraint to footerLabel will be added in setupFooterLabel or adjusted if emptyMessageLabel is shown
         ])
         
-        // To allow selection and keyboard navigation
+        //To allow selection and keyboard navigation
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
+        tableView.target = self
+        tableView.action = #selector(handleRowClicked(_:))
     }
 
     override func viewDidDisappear() {
@@ -387,62 +373,52 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
     }
 
     func startMonitoringClipboard() {
-        // Run a timer every 1 second (same as Electron app)
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        stopMonitoringClipboard()
+        let newTimer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
             self?.checkClipboard()
         }
-        // Add to runloop common to ensure it fires when UI is active (e.g. scrolling)
-        if let timer = timer {
-            RunLoop.current.add(timer, forMode: .common)
-        }
-        print("Clipboard monitoring started.")
+        // Allow macOS timer coalescing to save CPU and battery on MacBooks
+        newTimer.tolerance = 0.25
+        RunLoop.main.add(newTimer, forMode: .common)
+        timer = newTimer
     }
 
     func stopMonitoringClipboard() {
         timer?.invalidate()
         timer = nil
-        print("Clipboard monitoring stopped.")
+    }
+
+    func refreshClipboardIfNeeded() {
+        checkClipboard()
     }
 
     @objc private func checkClipboard() {
-        // Removed problematic guard:
-        // guard let lastChangeCount = self.lastPasteboardChangeCount else {
-        //     self.lastPasteboardChangeCount = NSPasteboard.general.changeCount
-        //     return
-        // }
-
-        let currentSystemChangeCount = NSPasteboard.general.changeCount
+        let currentSystemChangeCount = pasteboard.changeCount
         if currentSystemChangeCount == self.lastPasteboardChangeCount {
             return // No change detected
         }
 
-        // If execution reaches here, the pasteboard has changed.
-        // Update our record of the pasteboard's state to this new count.
         self.lastPasteboardChangeCount = currentSystemChangeCount
-        
-        var newItem: ClipboardItem?
-        let pasteboard = NSPasteboard.general
 
-        // Prioritize file URLs. This is a more robust way to detect file copies.
+        var newItem: ClipboardItem?
+
+        // Prioritize file URLs.
         if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !fileURLs.isEmpty {
-            // For simplicity, we'll take the first file URL if multiple are copied.
             newItem = ClipboardItem(fileURL: fileURLs[0])
-        } else if let image = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage {
-            // Create a new NSImage instance from the pasteboard image's TIFF representation
-            // This helps in detaching it from the pasteboard and ensuring it's a distinct copy.
-            if let tiffData = image.tiffRepresentation, let copiedImage = NSImage(data: tiffData) {
-                newItem = ClipboardItem(image: copiedImage)
-            }
-        } else if let text = NSPasteboard.general.string(forType: .string) {
+        } else if let imageData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
+                  let copiedImage = NSImage(data: imageData) {
+            newItem = ClipboardItem(image: copiedImage, imageData: imageData)
+        } else if let image = pasteboard.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage,
+                  let tiffData = image.tiffRepresentation,
+                  let copiedImage = NSImage(data: tiffData) {
+            newItem = ClipboardItem(image: copiedImage, imageData: tiffData)
+        } else if let text = pasteboard.string(forType: .string) {
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 newItem = ClipboardItem(text: text)
             }
         }
 
-
         if let item = newItem {
-            // Remove if item already exists (based on content for text items or image data)
-            // Use Equatable conformance of ClipboardItem
             if let existingIndex = clipboardHistory.firstIndex(of: item) {
                 clipboardHistory.remove(at: existingIndex)
             }
@@ -450,19 +426,16 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
             clipboardHistory.insert(item, at: 0)
 
             if clipboardHistory.count > MAX_HISTORY_ITEMS {
-                clipboardHistory = Array(clipboardHistory.prefix(MAX_HISTORY_ITEMS))
+                clipboardHistory.removeLast(clipboardHistory.count - MAX_HISTORY_ITEMS)
             }
 
-            print("Current history count: \\(clipboardHistory.count)")
-            DispatchQueue.main.async {
-                self.updateViewVisibility() // Changed from updateUIForHistoryState()
-                self.tableView.reloadData()
-                if !self.clipboardHistory.isEmpty {
-                    self.isProgrammaticSelection = true // Set flag before programmatic selection
-                    self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-                    self.tableView.scrollRowToVisible(0)
-                    self.isProgrammaticSelection = false // Reset flag after selection
-                }
+            guard isViewLoaded else { return }
+            updateViewVisibility()
+            if !clipboardHistory.isEmpty {
+                isProgrammaticSelection = true
+                tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                tableView.scrollRowToVisible(0)
+                isProgrammaticSelection = false
             }
         }
     }
@@ -472,47 +445,30 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
         return clipboardHistory.count
     }
 
-    // To enable dragging from the table view
-    func tableView(_ tableView: NSTableView, writeRowsWith rowIndexes: IndexSet, to pboard: NSPasteboard) -> Bool {
-        // We only support dragging single rows for now.
-        guard rowIndexes.count == 1, let rowIndex = rowIndexes.first else {
-            return false
-        }
-
-        guard rowIndex < clipboardHistory.count else {
-            return false
-        }
-
-        let item = clipboardHistory[rowIndex]
+    // Enable dragging items (text, images, and files) from the table view to other apps
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard row >= 0, row < clipboardHistory.count else { return nil }
+        let item = clipboardHistory[row]
 
         switch item.type {
         case .text(let text):
-            pboard.clearContents()
-            if pboard.setString(text, forType: .string) {
-                print("Dragging text: \(text)")
-                // Notify AppDelegate to close the popover
-                NotificationCenter.default.post(name: NSNotification.Name("ClippyItemDidBeginDrag"), object: nil)
-                return true
-            }
-            return false
-        case .image:
-            // Dragging images directly into input fields is not the primary request here.
-            // For now, we only support dragging text.
-            print("Dragging images is not currently supported via this method.")
-            return false
-        case .file:
-            // Dragging files directly into input fields is not the primary request here.
-            // For now, we only support dragging text.
-            print("Dragging files is not currently supported via this method.")
-            return false
+            let pbItem = NSPasteboardItem()
+            pbItem.setString(text, forType: .string)
+            return pbItem
+        case .image(let image, _):
+            return image
+        case .file(let url):
+            return url as NSURL
         }
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        NotificationCenter.default.post(name: NSNotification.Name("ClippyItemDidBeginDrag"), object: nil)
     }
 
     // MARK: - NSTableViewDelegate
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        let rowView = ClipboardTableRowView()
-        // Potentially pass data or configure rowView if needed, though most is handled by selection state
-        return rowView
+        return ClipboardTableRowView()
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -527,20 +483,16 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
             cell?.identifier = cellIdentifier
         }
 
-        // The configure method now handles all setup, including text truncation
         cell?.configure(with: item)
         
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        if isProgrammaticSelection { // If selection was programmatic, do nothing further.
-            return
-        }
+    @objc private func handleRowClicked(_ sender: NSTableView) {
+        let clickedRow = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        guard clickedRow >= 0, clickedRow < clipboardHistory.count else { return }
 
-        guard tableView.selectedRow >= 0, tableView.selectedRow < clipboardHistory.count else { return }
-
-        let selectedItem = clipboardHistory[tableView.selectedRow]
+        let selectedItem = clipboardHistory[clickedRow]
 
         NSPasteboard.general.clearContents()
         var success = false
@@ -548,23 +500,20 @@ class ClipboardHistoryViewController: NSViewController, NSTableViewDataSource, N
         switch selectedItem.type {
         case .text(let text):
             success = NSPasteboard.general.setString(text, forType: .string)
-        case .image(let image):
-            // For images, we need to write the image object to the pasteboard.
-            // NSImage conforms to NSPasteboardWriting, so it can be written directly.
+        case .image(let image, _):
             success = NSPasteboard.general.writeObjects([image])
         case .file(let url):
-            success = NSPasteboard.general.setString(url.absoluteString, forType: .fileURL)
+            success = NSPasteboard.general.writeObjects([url as NSURL])
         }
 
         if success {
-            print("Copied to clipboard: \(selectedItem.displayString)")
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
                 appDelegate.closePopover(sender: nil)
             }
         } else {
             print("Error copying to clipboard")
         }
-        tableView.deselectRow(tableView.selectedRow) // Deselect after copy
+        tableView.deselectRow(clickedRow)
     }
 
     // Set row height
